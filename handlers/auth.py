@@ -40,7 +40,7 @@ async def check_auth_status(message: Message, state: FSMContext, user_id: int, c
     
     try:
         # Send the initial message about waiting
-        status_message = await message.answer("⏳ Очікую завершення авторизації... (0%)")
+        status_message = await message.answer("⏳ waiting for authorization completion... (0%)")
         
         while attempt < max_attempts:
             # Check the access token
