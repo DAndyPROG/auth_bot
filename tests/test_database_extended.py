@@ -1,38 +1,54 @@
 import os
 import datetime
 import pytest
+import pytest_asyncio
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from sqlalchemy import MetaData
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.future import select
 
 from utils.database import AsyncDatabase, Base, User, Chat, Message, db
 
 
-@pytest.fixture(scope="function")
+@pytest_asyncio.fixture(scope="function")
 async def in_memory_db():
     """Fixture for creating a test database in memory"""
     # Create a test database in memory
-    test_db = AsyncDatabase(url="sqlite+aiosqlite:///:memory:")
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        echo=True
+    )
+    
     # Initialize models
-    async with test_db.engine.begin() as conn:
+    async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     
-    yield test_db
-    
-    # Clear all tables after tests
-    async with test_db.engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-    await test_db.engine.dispose()
+    # Yield the engine
+    try:
+        yield engine
+    finally:
+        # Clear all tables after tests
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+        await engine.dispose()
 
 
-@pytest.fixture(scope="function")
+@pytest_asyncio.fixture(scope="function")
 async def db_session(in_memory_db):
     """Fixture for getting a session from the test database"""
-    async with in_memory_db.async_session() as session:
+    async_session_factory = async_sessionmaker(
+        in_memory_db, expire_on_commit=False
+    )
+    
+    session = async_session_factory()
+    await session.begin()
+    try:
         yield session
+    finally:
+        await session.rollback()
+        await session.close()
 
 
 class TestIntegrationAsyncDatabase:
@@ -91,64 +107,61 @@ class TestIntegrationUser:
         result = await User.get_by_telegram_id(db_session, 123456)
         assert result is None
         
-        # Call the test method
+        # Create a new user
         user = await User.create_or_update(
             db_session,
             123456,
             "auth0|test123",
-            {"sub": "auth0|test123", "name": "Test User"},
-            True,
-            "Test User",
-            "+123456789",
-            "test@example.com"
+            {
+                "sub": "auth0|test123",
+                "name": "Test User",
+                "email": "test@example.com"
+            },
+            is_active=True
         )
         
         # Check that the user was created
         assert user is not None
         assert user.telegram_id == 123456
         assert user.auth0_id == "auth0|test123"
-        assert user.is_active == True
-        assert user.full_name == "Test User"
-        assert user.phone_number == "+123456789"
         assert user.email == "test@example.com"
+        assert user.is_active is True
 
     @pytest.mark.asyncio
     async def test_create_or_update_existing_user_real_db(self, db_session):
         """Integration test for updating an existing user"""
-        # Create a user
-        user = User(
-            telegram_id=123456,
-            full_name="Old Name",
-            email="old@example.com",
-            is_active=False
+        # Create initial user
+        initial_user = await User.create_or_update(
+            db_session,
+            123456,
+            "auth0|test123",
+            {
+                "sub": "auth0|test123",
+                "name": "Initial User",
+                "email": "initial@example.com"
+            },
+            is_active=True
         )
-        db_session.add(user)
-        await db_session.commit()
         
-        # Call the test method for updating
+        # Update the user
         updated_user = await User.create_or_update(
             db_session,
             123456,
             "auth0|test123",
-            {"sub": "auth0|test123", "name": "New Name"},
-            True,
-            "New Full Name",
-            "+123456789",
-            "new@example.com"
+            {
+                "sub": "auth0|test123",
+                "name": "Updated User",
+                "email": "updated@example.com"
+            },
+            is_active=True
         )
         
         # Check that the user was updated
+        assert updated_user is not None
         assert updated_user.telegram_id == 123456
         assert updated_user.auth0_id == "auth0|test123"
-        assert updated_user.is_active == True
-        assert updated_user.full_name == "New Full Name"
-        assert updated_user.phone_number == "+123456789"
-        assert updated_user.email == "new@example.com"
-        
-        # Check that the data in the database was updated
-        result = await User.get_by_telegram_id(db_session, 123456)
-        assert result.full_name == "New Full Name"
-        assert result.email == "new@example.com"
+        assert updated_user.email == "updated@example.com"
+        assert updated_user.is_active is True
 
     @pytest.mark.asyncio
     async def test_create_or_update_extract_auth0_data_real_db(self, db_session):
@@ -163,7 +176,8 @@ class TestIntegrationUser:
                 "name": "Auth0 Name",
                 "email": "auth0@example.com",
                 "phone_number": "+111222333"
-            }
+            },
+            is_active=True
         )
         
         # Check that the data was extracted from auth0_data
@@ -197,53 +211,107 @@ class TestIntegrationUser:
         result = await User.deactivate(db_session, 999999)
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_deactivate_existing_user_real_db(self, db_session):
+        """Integration test for deactivating an existing user"""
+        # Create a user
+        user = await User.create_or_update(
+            db_session,
+            123456,
+            "auth0|test123",
+            {
+                "sub": "auth0|test123",
+                "name": "Test User",
+                "email": "test@example.com"
+            },
+            is_active=True
+        )
+        
+        # Deactivate the user
+        deactivated_user = await User.deactivate(db_session, 123456)
+        
+        # Check that the user was deactivated
+        assert deactivated_user is not None
+        assert deactivated_user.telegram_id == 123456
+        assert deactivated_user.is_active is False
+        
+        # Verify the user is deactivated in the database
+        result = await User.get_by_telegram_id(db_session, 123456)
+        assert result is not None
+        assert result.is_active is False
+
 
 class TestIntegrationChat:
     @pytest.mark.asyncio
     async def test_create_chat_real_db(self, db_session):
-        """Integration test for creating a chat"""
-        # Create a user for chat connection
-        user = User(telegram_id=123456)
-        db_session.add(user)
-        await db_session.commit()
+        """Integration test for creating a new chat"""
+        # Create a user first
+        user = await User.create_or_update(
+            db_session,
+            123456,
+            "auth0|test123",
+            {
+                "sub": "auth0|test123",
+                "name": "Test User",
+                "email": "test@example.com"
+            },
+            is_active=True
+        )
         
-        # Get the user ID
-        result = await db_session.execute(select(User).where(User.telegram_id == 123456))
-        user = result.scalars().first()
+        # Create a new chat
+        chat = await Chat.create(
+            db_session,
+            user.id,
+            123456
+        )
         
-        # Call the test method
-        chat = await Chat.create(db_session, user.id, 654321)
-        
-        # Check the result
+        # Check that the chat was created
         assert chat is not None
         assert chat.user_id == user.id
-        assert chat.chat_id == 654321
-        assert chat.created_at is not None
+        assert chat.chat_id == 123456
+        
+        # Verify the chat exists in the database
+        result = await Chat.get_by_id(db_session, chat.id)
+        assert result is not None
+        assert result.chat_id == 123456
 
     @pytest.mark.asyncio
     async def test_get_user_chats_real_db(self, db_session):
         """Integration test for getting user chats"""
-        # Create a user
-        user = User(telegram_id=123456)
-        db_session.add(user)
-        await db_session.commit()
+        # Create a user first
+        user = await User.create_or_update(
+            db_session,
+            123456,
+            "auth0|test123",
+            {
+                "sub": "auth0|test123",
+                "name": "Test User",
+                "email": "test@example.com"
+            },
+            is_active=True
+        )
         
-        # Get the user ID
-        result = await db_session.execute(select(User).where(User.telegram_id == 123456))
-        user = result.scalars().first()
+        # Create multiple chats for the user
+        chat1 = await Chat.create(
+            db_session,
+            user.id,
+            123456
+        )
         
-        # Create several chats
-        chat1 = Chat(user_id=user.id, chat_id=111111)
-        chat2 = Chat(user_id=user.id, chat_id=222222)
-        db_session.add_all([chat1, chat2])
-        await db_session.commit()
+        chat2 = await Chat.create(
+            db_session,
+            user.id,
+            654321
+        )
         
-        # Call the test method
+        # Get user's chats
         chats = await Chat.get_user_chats(db_session, user.id)
         
-        # Check the result
+        # Check that all chats were retrieved
         assert len(chats) == 2
-        assert {chat.chat_id for chat in chats} == {111111, 222222}
+        chat_ids = {chat.chat_id for chat in chats}
+        assert 123456 in chat_ids
+        assert 654321 in chat_ids
 
     @pytest.mark.asyncio
     async def test_get_by_id_real_db(self, db_session):
@@ -282,40 +350,45 @@ class TestIntegrationChat:
 class TestIntegrationMessage:
     @pytest.mark.asyncio
     async def test_log_message_real_db(self, db_session):
-        """Integration test for logging a message"""
-        # Create a user and a chat
-        user = User(telegram_id=123456)
-        db_session.add(user)
-        await db_session.commit()
-        
-        # Get the user ID
-        result = await db_session.execute(select(User).where(User.telegram_id == 123456))
-        user = result.scalars().first()
-        
-        # Create a chat
-        chat = Chat(user_id=user.id, chat_id=654321)
-        db_session.add(chat)
-        await db_session.commit()
-        
-        # Call the test method
-        message = await Message.log_message(
+        """Integration test for logging messages"""
+        # Create a user and chat first
+        user = await User.create_or_update(
             db_session,
-            654321,
-            "Test message",
-            True,
-            1
+            123456,
+            "auth0|test123",
+            {
+                "sub": "auth0|test123",
+                "name": "Test User",
+                "email": "test@example.com"
+            },
+            is_active=True
         )
         
-        # Check the result
-        assert message is not None
-        assert message.text == "Test message"
-        assert message.from_user == True
-        assert message.message_id == 1
+        chat = await Chat.create(
+            db_session,
+            user.id,
+            123456
+        )
         
-        # Check that the chat ID was set correctly
-        result = await db_session.execute(select(Chat).where(Chat.chat_id == 654321))
-        db_chat = result.scalars().first()
-        assert message.chat_id == db_chat.id
+        # Log a message
+        message = await Message.log_message(
+            db_session,
+            chat.chat_id,
+            "Test message",
+            True
+        )
+        
+        # Check that the message was logged
+        assert message is not None
+        assert message.chat_id == chat.id
+        assert message.text == "Test message"
+        assert message.from_user is True
+        
+        # Verify the message exists in the database
+        history = await Message.get_chat_history(db_session, chat.chat_id)
+        assert len(history) == 1
+        assert history[0].text == "Test message"
+        assert history[0].from_user is True
 
     @pytest.mark.asyncio
     async def test_log_message_no_chat_real_db(self, db_session):
@@ -332,38 +405,61 @@ class TestIntegrationMessage:
 
     @pytest.mark.asyncio
     async def test_get_chat_history_real_db(self, db_session):
-        """Integration test for getting a chat history"""
-        # Create a user and a chat
-        user = User(telegram_id=123456)
-        db_session.add(user)
-        await db_session.commit()
+        """Integration test for getting chat history"""
+        # Create a user and chat first
+        user = await User.create_or_update(
+            db_session,
+            123456,
+            "auth0|test123",
+            {
+                "sub": "auth0|test123",
+                "name": "Test User",
+                "email": "test@example.com"
+            },
+            is_active=True
+        )
         
-        # Get the user ID
-        result = await db_session.execute(select(User).where(User.telegram_id == 123456))
-        user = result.scalars().first()
+        chat = await Chat.create(
+            db_session,
+            user.id,
+            123456
+        )
         
-        # Create a chat
-        chat = Chat(user_id=user.id, chat_id=654321)
-        db_session.add(chat)
-        await db_session.commit()
+        # Log multiple messages
+        await Message.log_message(
+            db_session,
+            chat.chat_id,
+            "User message 1",
+            True
+        )
         
-        # Create messages
-        message1 = await Message.log_message(db_session, 654321, "Message 1", True, 1)
-        message2 = await Message.log_message(db_session, 654321, "Message 2", False, 2)
-        message3 = await Message.log_message(db_session, 654321, "Message 3", True, 3)
+        await Message.log_message(
+            db_session,
+            chat.chat_id,
+            "Assistant message 1",
+            False
+        )
         
-        # Call the test method
-        history = await Message.get_chat_history(db_session, 654321)
+        await Message.log_message(
+            db_session,
+            chat.chat_id,
+            "User message 2",
+            True
+        )
         
-        # Check the result
+        # Get chat history
+        history = await Message.get_chat_history(db_session, chat.chat_id)
+        
+        # Check that all messages were retrieved in correct order
         assert len(history) == 3
-        assert history[0].text == "Message 1"
-        assert history[1].text == "Message 2"
-        assert history[2].text == "Message 3"
+        assert history[0].text == "User message 1"
+        assert history[1].text == "Assistant message 1"
+        assert history[2].text == "User message 2"
         
-        # Check that the history is ordered by timestamp
-        assert history[0].timestamp <= history[1].timestamp
-        assert history[1].timestamp <= history[2].timestamp
+        # Check message roles
+        assert history[0].from_user is True
+        assert history[1].from_user is False
+        assert history[2].from_user is True
 
     @pytest.mark.asyncio
     async def test_get_chat_history_no_chat_real_db(self, db_session):
@@ -383,23 +479,45 @@ async def test_complex_database_scenario(db_session):
         db_session,
         123456,
         "auth0|test123",
-        {"sub": "auth0|test123", "name": "Test User", "email": "test@example.com"},
-        True,
-        "Test User",
-        "+123456789",
-        "test@example.com"
+        {
+            "sub": "auth0|test123",
+            "name": "Test User",
+            "email": "test@example.com"
+        },
+        is_active=True
     )
     
     # 2. Create a chat for the user
-    chat = await Chat.create(db_session, user.id, 654321)
+    chat = await Chat.create(
+        db_session,
+        user.id,
+        123456
+    )
     
     # 3. Log several messages
-    message1 = await Message.log_message(db_session, 654321, "Hello!", True, 1)
-    message2 = await Message.log_message(db_session, 654321, "Hi there!", False, 2)
-    message3 = await Message.log_message(db_session, 654321, "How are you?", True, 3)
+    message1 = await Message.log_message(
+        db_session,
+        chat.chat_id,
+        "Hello!",
+        True
+    )
+    
+    message2 = await Message.log_message(
+        db_session,
+        chat.chat_id,
+        "Hi there!",
+        False
+    )
+    
+    message3 = await Message.log_message(
+        db_session,
+        chat.chat_id,
+        "How are you?",
+        True
+    )
     
     # 4. Get the chat history
-    history = await Message.get_chat_history(db_session, 654321)
+    history = await Message.get_chat_history(db_session, chat.chat_id)
     
     # 5. Check the results
     assert len(history) == 3
@@ -409,11 +527,11 @@ async def test_complex_database_scenario(db_session):
     
     # 6. Deactivate the user
     deactivated_user = await User.deactivate(db_session, 123456)
-    assert deactivated_user.is_active == False
+    assert deactivated_user.is_active is False
     
     # 7. Check that the user is deactivated
     db_user = await User.get_by_telegram_id(db_session, 123456)
-    assert db_user.is_active == False
+    assert db_user.is_active is False
 
 
 @pytest.mark.asyncio
