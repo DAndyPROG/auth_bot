@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    restart: always
+    depends_on:
+      - db
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    networks:
+      - bot-network
+
+  db:
+    image: postgres:13
+    restart: always
+    environment:
+      - POSTGRES_PASSWORD=postgress
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=tgbot
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - bot-network
+
+networks:
+  bot-network:
+    driver: bridge
+
+volumes:
+  postgres_data: 
