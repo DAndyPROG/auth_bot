@@ -24,7 +24,7 @@ class TestAsyncDatabase:
             # Check that the create_async_engine method was called with the correct URL
             assert mock_create_engine.called
             args, kwargs = mock_create_engine.call_args
-            assert args[0] == "postgresql+asyncpg://postgres:postgress@db:5432/tgbot"
+            assert args[0] == "postgresql+asyncpg://postgres:postgress@db:5432/tgbot" # type: ignore
     
     @patch('utils.database.create_async_engine')
     def test_init_with_custom_url(self, mock_create_engine):
@@ -35,30 +35,30 @@ class TestAsyncDatabase:
         # Check that the create_async_engine method was called with the custom URL
         assert mock_create_engine.called
         args, kwargs = mock_create_engine.call_args
-        assert args[0] == "custom_url"
+        assert args[0] == "custom_url" # type: ignore
     
     @pytest.mark.asyncio
     async def test_init_models(self):
         """Test initialization of database models"""
-        # Створюємо наших моків
+        # Create our mocks
         mock_engine = MagicMock()
         mock_connection = MagicMock()
         mock_metadata = MagicMock()
         
-        # Патч необхідних компонентів
+        # Patch the necessary components
         with patch('utils.database.create_async_engine', return_value=mock_engine), \
              patch('utils.database.async_sessionmaker'), \
              patch.object(mock_engine, 'begin', return_value=MagicMock(
                  __aenter__=AsyncMock(return_value=mock_connection),
                  __aexit__=AsyncMock())):
             
-            # Створюємо екземпляр AsyncDatabase
+            # Create an instance of AsyncDatabase
             db = AsyncDatabase()
             
-            # Викликаємо метод, перевіряємо що він не викликає помилок
+            # Call the method, check that it doesn't raise an error
             await db.init_models()
             
-            # Метод init_models завершився без помилок - тест успішний
+            # The init_models method ended without errors - the test is successful
     
     @pytest.mark.asyncio
     async def test_get_session(self):

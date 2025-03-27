@@ -34,6 +34,9 @@ async def check_auth_status(message: Message, state: FSMContext, user_id: int, c
         state: FSM state
         user_id: Telegram user ID
         chat_id: Telegram chat ID
+        
+    Returns:
+        bool: True if authorization was successful, False otherwise
     """
     max_attempts = 30  # Maximum number of attempts (30 * 5 seconds = 150 seconds)
     attempt = 0
@@ -120,7 +123,7 @@ async def check_auth_status(message: Message, state: FSMContext, user_id: int, c
                         from_user=False
                     )
                     
-                    return
+                    return True
             
             # Increase the attempt counter
             attempt += 1
@@ -158,6 +161,8 @@ async def check_auth_status(message: Message, state: FSMContext, user_id: int, c
                 from_user=False
             )
             
+            return False
+            
     except Exception as e:
         # If an error occurs, inform the user
         async with db.async_session() as session:
@@ -184,6 +189,8 @@ async def check_auth_status(message: Message, state: FSMContext, user_id: int, c
                 )
             except Exception as msg_error:
                 print(f"Failed to send a message: {msg_error}")
+            
+            return False
 
 
 @router.message(Command("start"))

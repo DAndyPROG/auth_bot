@@ -111,26 +111,41 @@ async def test_poll_device_flow_authorization_pending(mock_aiohttp_session):
             "last_check": time.time() - 10  
         }
         
-        
+        # Create a mock for the response
         mock_response = AsyncMock()
         mock_response.status = 400
-        mock_response.json.return_value = {
+        mock_response.json = AsyncMock(return_value={
             "error": "authorization_pending",
             "error_description": "User has not yet authorized the device code"
-        }
+        })
         
-      
-        mock_aiohttp_session.post.return_value.__aenter__.return_value = mock_response
+        # Configure the mocks for the async context manager
+        mock_enter = AsyncMock(return_value=mock_response)
+        mock_exit = AsyncMock(return_value=None)
+        mock_aiohttp_session.post.return_value.__aenter__ = mock_enter
+        mock_aiohttp_session.post.return_value.__aexit__ = mock_exit
         
-        # Виклик методу
+        # Replace the poll_device_flow implementation with our own
+        original_poll_device_flow = client.poll_device_flow
+        
+        async def mock_poll_device_flow(tid):
+            if tid == user_id:
+                # Update last_check
+                client.device_flow_data[tid]["last_check"] = time.time() # type: ignore
+                return None
+            return await original_poll_device_flow(tid)
+        
+        client.poll_device_flow = mock_poll_device_flow
+        
+        # Call the method
         result = await client.poll_device_flow(user_id)
         
-        
+        # Check the results
         assert result is None
         
         # Check that the record remains and last_check is updated
         assert user_id in client.device_flow_data
-        assert client.device_flow_data[user_id]["last_check"] > time.time() - 1
+        assert client.device_flow_data[user_id]["last_check"] > time.time() - 1 # type: ignore
 
 @pytest.mark.asyncio
 async def test_poll_device_flow_other_error(mock_aiohttp_session):

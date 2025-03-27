@@ -4,14 +4,14 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy import (JSON, Boolean, Column, DateTime, ForeignKey, Integer,
                         MetaData, String, Table, Text, delete, func, select,
-                        update, text)
+                        update, text, BigInteger)
 from sqlalchemy.ext.asyncio import (AsyncSession, async_sessionmaker,
                                     create_async_engine)
 from sqlalchemy.orm import declarative_base
 
 # Change the connection to SQLite for local development
 DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql+asyncpg://postgres:postgress@db/tgbot"
+    "DATABASE_URL", "postgresql+asyncpg://postgres:postgress@db:5432/tgbot"
 )
 Base = declarative_base()
 metadata = MetaData()
@@ -43,7 +43,7 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(Integer, unique=True, nullable=False, index=True)
+    telegram_id = Column(BigInteger, unique=True, nullable=False, index=True)
     auth0_id = Column(String, unique=True, nullable=True)
     auth0_data = Column(JSON, nullable=True)
     
@@ -165,7 +165,7 @@ class Chat(Base):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    chat_id = Column(Integer, nullable=False)
+    chat_id = Column(BigInteger, nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.now)
 
     @classmethod

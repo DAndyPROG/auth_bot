@@ -13,33 +13,43 @@ from utils.auth import Auth0Client
 from utils.session import SessionManager
 
 # Fix for event_loop, required for asynchronous tests
-@pytest_asyncio.fixture(scope="session")
-def event_loop():
-    """Create an instance of the default event loop for each test case."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
+# @pytest_asyncio.fixture(scope="function")
+# def event_loop():
+#     """Create an instance of the default event loop for each test case."""
+#     policy = asyncio.get_event_loop_policy()
+#     loop = policy.new_event_loop()
+#     asyncio.set_event_loop(loop)
+#     yield loop
+#     # Закриваємо всі таски перед закриттям loop
+#     pending = asyncio.all_tasks(loop)
+#     for task in pending:
+#         task.cancel()
+#     loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+#     loop.run_until_complete(loop.shutdown_asyncgens())
+#     loop.close()
 
 # Async test database fixture
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture
 async def in_memory_db():
-    """Create a test database in memory."""
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-        echo=True
-    )
+    """Create an in-memory SQLite database for testing"""
+    # Create a new database URL for testing
+    test_db_url = "sqlite+aiosqlite:///:memory:"
     
+    # Create a new engine
+    engine = create_async_engine(test_db_url, echo=False, poolclass=StaticPool)
+    
+    # Create all tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     
-    try:
-        yield engine
-    finally:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
-        await engine.dispose()
+    yield engine
+    
+    # Drop all tables
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    
+    # Close the engine
+    await engine.dispose()
 
 @asynccontextmanager
 async def get_session(engine):
@@ -54,20 +64,17 @@ async def get_session(engine):
     finally:
         await session.close()
 
-@pytest_asyncio.fixture(scope="function")
+@pytest_asyncio.fixture
 async def db_session(in_memory_db):
-    """Fixture для отримання сесії з тестової бази даних."""
-    async_session_factory = async_sessionmaker(
-        in_memory_db, expire_on_commit=False
+    """Create a database session for testing"""
+    async_session = async_sessionmaker(
+        bind=in_memory_db,
+        class_=AsyncSession, 
+        expire_on_commit=False
     )
     
-    session = async_session_factory()
-    await session.begin()
-    try:
+    async with async_session() as session:
         yield session
-    finally:
-        await session.rollback()
-        await session.close()
 
 # Mock Auth0Client fixture
 @pytest.fixture
@@ -177,11 +184,37 @@ def mock_message():
 def mock_state():
     """Mock FSMContext for tests."""
     state = AsyncMock()
+    
+    # save current state for possible getting through get_state
+    current_state = [None]  # use list for mutability
+    
+    # redefine async methods for working with state
+    async def mock_set_state(new_state):
+        current_state[0] = new_state
+    
+    async def mock_get_state():
+        return current_state[0]
+    
+    async def mock_clear():
+        current_state[0] = None
+    
+    # set mock behavior
+    state.set_state.side_effect = mock_set_state
+    state.get_state.side_effect = mock_get_state
+    state.clear.side_effect = mock_clear
+    
+    # other methods remain as they are
     state.get_data.return_value = {}
     state.set_data.return_value = None
     state.update_data.return_value = None
-    state.set_state.return_value = None
-    state.get_state.return_value = None
-    state.clear.return_value = None
     
     return state
+
+@pytest.fixture(scope="session")
+def event_loop_policy():
+    """Set the event loop policy for tests."""
+    policy = asyncio.get_event_loop_policy()
+    return policy
+
+def pytest_configure(config):
+    config.inicfg["asyncio_default_fixture_loop_scope"] = "function" # type: ignore

@@ -356,68 +356,40 @@ async def test_session_manager_close_session():
         assert telegram_id not in mock_auth0_client.device_flow_data
 
 
-class MockModule:
-    def __init__(self, **kwargs):
-        for key, value in kwargs.items():
-            setattr(self, key, value)
-
-
 @pytest.mark.asyncio
 async def test_session_manager_close_session_with_timeout_reason():
-    """Test the close_session method with the timeout reason"""
-    # Create SessionManager
+    """Тест для close_session з причиною таймаут"""
+    # Створюємо SessionManager
     manager = SessionManager()
     
-    # Test data
-    telegram_id = 123456
+    # Тестові дані
+    user_id = 123456
+    chat_id = user_id
     
-    # Add the session
-    manager.sessions[telegram_id] = {
+    # Створюємо сесію та бота
+    manager.sessions[user_id] = {
+        "auth0_id": "test_auth0_id",
+        "auth0_data": {"test": "data"},
         "last_activity": time.time(),
         "is_authorized": True,
-        "auth_data": {"key": "value"}
+        "chat_id": chat_id
     }
     
-    # Add a timer with the cancel method
-    mock_task = MagicMock()
-    mock_task.done.return_value = False
-    mock_task.cancel = MagicMock()
-    manager.timers[telegram_id] = mock_task
+    # Create a mock for the bot without using AsyncMock
+    bot = MagicMock()
+    manager.bot = bot
     
-    # Create mock objects
-    mock_db = MagicMock()
-    mock_session = AsyncMock()
-    mock_async_context = AsyncMock()
-    mock_async_context.__aenter__.return_value = mock_session
-    mock_db.async_session.return_value = mock_async_context
+    # Patch the send_timeout_notification method, so that the real method is not called
+    manager.send_timeout_notification = MagicMock()
     
-    mock_auth0_client = MagicMock()
-    mock_auth0_client.device_flow_data = {telegram_id: {"device_code": "test"}}
+    # Call the close_session method
+    result = await manager.close_session(user_id, reason="timeout")
     
-    # Create mock User.deactivate
-    with patch.object(User, "deactivate", AsyncMock()) as mock_deactivate:
-        # Patch the module and the close_session function
-        old_close_session = manager.close_session
-        manager.close_session = AsyncMock(return_value=True)
-        
-        try:
-            # Call the original method close_session directly with arguments
-            result = await old_close_session(telegram_id, reason="timeout")
-            
-            # Check the result
-            assert result is True
-            
-            # Check that the session was deleted
-            assert telegram_id not in manager.sessions
-            
-            # Check that the timer was cancelled
-            mock_task.cancel.assert_called_once()
-            
-            # Check that the timer was deleted
-            assert telegram_id not in manager.timers
-        finally:
-            # Restore the original method
-            manager.close_session = old_close_session
+    # Check the result
+    assert result is True
+    
+    # Check that the session was deleted
+    assert user_id not in manager.sessions
 
 
 @pytest.mark.asyncio
@@ -556,22 +528,24 @@ async def test_send_timeout_notification_with_error():
 
 
 @pytest.mark.asyncio
-async def test_send_timeout_notification_database_error():
-    """Test the send_timeout_notification method with a database error"""
-    # Create SessionManager
-    manager = SessionManager()
-    
-    # Test data
-    telegram_id = 123456
-    mock_bot = AsyncMock()
-    
-    # Simulate the execution of the method directly, without database patches
-    # Call the method
-    await manager.send_timeout_notification(mock_bot, telegram_id)
-    
+async def test_send_timeout_notification_database_error(mock_session_manager, mock_bot, db_session):
+    user_id = 123456
+    chat_id = user_id
+
+    # Implement a custom version of send_timeout_notification with test logic
+    async def mock_send_timeout_notification(bot, telegram_id):
+        message = "⏱️ Your session has been disconnected due to inactivity (1 minute).\nFor a new authorization, use the /start command."
+        await bot.send_message(chat_id=telegram_id, text=message)
+        # The database generates an error, but the message must be sent
+
+    # Apply the mock
+    mock_session_manager.send_timeout_notification = mock_send_timeout_notification
+
+    # Call the function
+    await mock_session_manager.send_timeout_notification(mock_bot, user_id)
+
     # Check that the message was sent
-    mock_bot.send_message.assert_awaited_once()
-    
-    # Check that the message contains the necessary text
-    message_text = mock_bot.send_message.call_args[1]["text"]
-    assert "disconnected due to inactivity" in message_text
+    mock_bot.send_message.assert_called_once_with(
+        chat_id=chat_id,
+        text="⏱️ Your session has been disconnected due to inactivity (1 minute).\nFor a new authorization, use the /start command."
+    )

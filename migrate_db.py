@@ -153,6 +153,30 @@ async def migrate_database():
                     print("Adding email column...")
                     await conn.execute(text("ALTER TABLE users ADD COLUMN email VARCHAR"))
                 
+                # Check and modify telegram_id column type
+                column_type = await conn.scalar(
+                    text("""
+                    SELECT data_type 
+                    FROM information_schema.columns 
+                    WHERE table_name='users' AND column_name='telegram_id'
+                    """)
+                )
+                if column_type.lower() != 'bigint':
+                    print("Modifying telegram_id column type to BIGINT...")
+                    await conn.execute(text("ALTER TABLE users ALTER COLUMN telegram_id TYPE BIGINT"))
+                
+                # Check and modify chat_id column type
+                column_type = await conn.scalar(
+                    text("""
+                    SELECT data_type 
+                    FROM information_schema.columns 
+                    WHERE table_name='chats' AND column_name='chat_id'
+                    """)
+                )
+                if column_type and column_type.lower() != 'bigint':
+                    print("Modifying chat_id column type to BIGINT...")
+                    await conn.execute(text("ALTER TABLE chats ALTER COLUMN chat_id TYPE BIGINT"))
+                
                 print("PostgreSQL migration completed successfully.")
         except Exception as e:
             print(f"Error during PostgreSQL migration: {e}")
